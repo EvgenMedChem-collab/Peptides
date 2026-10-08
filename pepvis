@@ -1,0 +1,305 @@
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.patches import FancyArrowPatch, Circle, Rectangle
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+from Bio.SeqUtils.ProtParam import ProteinAnalysis
+
+# =============================================================
+# 1. ШКАЛЫ СКЛОННОСТИ (Chou-Fasman, упрощённые)
+# =============================================================
+HELIX_PROPENSITY = {
+    'A': 1.42, 'R': 0.98, 'N': 0.67, 'D': 1.01, 'C': 0.70,
+    'Q': 1.11, 'E': 1.51, 'G': 0.57, 'H': 1.00, 'I': 1.08,
+    'L': 1.21, 'K': 1.16, 'M': 1.45, 'F': 1.13, 'P': 0.57,
+    'S': 0.77, 'T': 0.83, 'W': 1.08, 'Y': 0.69, 'V': 1.06
+}
+SHEET_PROPENSITY = {
+    'A': 0.83, 'R': 0.93, 'N': 0.89, 'D': 0.54, 'C': 1.19,
+    'Q': 1.10, 'E': 0.37, 'G': 0.75, 'H': 0.87, 'I': 1.60,
+    'L': 1.30, 'K': 0.74, 'M': 1.05, 'F': 1.38, 'P': 0.55,
+    'S': 0.75, 'T': 1.19, 'W': 1.37, 'Y': 1.47, 'V': 1.70
+}
+
+# Классические φ/ψ углы (в градусах) для идеальных структур
+PHI_PSI = {
+    'alpha':  (-57, -47),   # правая α-спираль
+    'beta':   (-135, 135),  # β-складка
+    'coil':   (  60,  60),  # неупорядоченная
+}
+
+# =============================================================
+# 2. ПРЕДСКАЗАНИЕ ВТОРИЧНОЙ СТРУКТУРЫ
+# =============================================================
+def sliding_window(seq, window=6):
+    """Скользящее окно для сглаживания склонностей."""
+    half = window // 2
+    padded = 'X' * half + seq + 'X' * half
+    return [padded[i:i + window] for i in range(len(seq))]
+
+
+def predict_secondary_structure(seq, window=6):
+    """
+    Возвращает список меток ('H' — α-спираль, 'E' — β-складка, 'C' — coil)
+    для каждого остатка и итоговые средние склонности.
+    """
+    h_scores, e_scores = [], []
+    for win in sliding_window(seq, window):
+        h = np.mean([HELIX_PROPENSITY.get(a, 1.0) for a in win])
+        e = np.mean([SHEET_PROPENSITY.get(a, 1.0) for a in win])
+        h_scores.append(h)
+        e_scores.append(e)
+
+    labels = []
+    for h, e in zip(h_scores, e_scores):
+        if h >= 1.05 and h >= e:
+            labels.append('H')
+        elif e >= 1.05 and e > h:
+            labels.append('E')
+        else:
+            labels.append('C')
+    return labels, np.array(h_scores), np.array(e_scores)
+
+
+# =============================================================
+# 3. СПИРАЛЬНОЕ КОЛЕСО
+# =============================================================
+def draw_helical_wheel(sequence, ax=None, title=None):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
+
+    angles = np.linspace(0, 2 * np.pi, len(sequence), endpoint=False)
+    radii = np.ones(len(sequence))
+
+    # Цвет по гидрофобности (Kyte-Doolittle, упрощённо)
+    kd = {'A': 1.8, 'R': -4.5, 'N': -3.5, 'D': -3.5, 'C': 2.5, 'Q': -3.5,
+          'E': -3.5, 'G': -0.4, 'H': -3.2, 'I': 4.5, 'L': 3.8, 'K': -3.9,
+          'M': 1.9, 'F': 2.8, 'P': -1.6, 'S': -0.8, 'T': -0.7, 'W': -0.9,
+          'Y': -1.3, 'V': 4.2}
+    colors = [plt.cm.coolwarm((kd.get(a, 0) + 4.5) / 9) for a in sequence]
+
+    ax.scatter(angles, radii, s=350, c=colors, edgecolor='black', zorder=3)
+    for angle, radius, aa in zip(angles, radii, sequence):
+        ax.text(angle, radius, aa, ha='center', va='center',
+                fontsize=12, fontweight='bold', zorder=4)
+
+    ax.set_ylim(0, 1.3)
+    ax.set_xticks([]); ax.set_yticks([])
+    ax.set_title(title or f'Helical wheel: {sequence}', pad=20, fontsize=12)
+    return ax
+
+
+# =============================================================
+# 4. СХЕМА β-СКЛАДКИ (антипараллельная)
+# =============================================================
+def draw_beta_sheet(sequence, ax=None, title=None):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 3))
+
+    n = len(sequence)
+    # Расставляем остатки зигзагом (β-strand)
+    x = np.arange(n)
+    y = [0.5 if i % 2 == 0 else 0.0 for i in range(n)]
+
+    # Соединяем зигзагом (backbone)
+    ax.plot(x, y, '-', color='steelblue', lw=3, zorder=2)
+    ax.scatter(x, y, s=250, c='lightcoral', edgecolor='black', zorder=3)
+
+    for xi, yi, aa in zip(x, y, sequence):
+        ax.text(xi, yi, aa, ha='center', va='center',
+                fontsize=11, fontweight='bold', zorder=4)
+
+    # Пунктирные водородные связи (схематично)
+    for i in range(0, n - 3, 2):
+        ax.plot([i, i + 3], [y[i] + 0.25, y[i + 3] + 0.25],
+                ':', color='gray', lw=1)
+        ax.plot([i, i + 3], [y[i] - 0.25, y[i + 3] - 0.25],
+                ':', color='gray', lw=1)
+
+    ax.set_ylim(-0.6, 1.0)
+    ax.axis('off')
+    ax.set_title(title or f'β-strand: {sequence}', fontsize=12)
+    return ax
+
+
+# =============================================================
+# 5. КАРТА РАМАЧАНДРАНА
+# =============================================================
+def draw_ramachandran(phi_psi_points, title='Карта Рамачандрана', ax=None):
+    """
+    phi_psi_points: список кортежей (phi, psi) в градусах.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6, 6))
+
+    # Разрешённые области (упрощённая аппроксимация)
+    phi_grid = np.linspace(-180, 180, 300)
+    psi_grid = np.linspace(-180, 180, 300)
+    PHI, PSI = np.meshgrid(phi_grid, psi_grid)
+
+    # "Разрешённые" зоны (грубо, для иллюстрации)
+    allowed = np.zeros_like(PHI)
+    # α-область
+    allowed += np.exp(-(((PHI + 57) / 25) ** 2 + ((PSI + 47) / 25) ** 2))
+    # β-область
+    allowed += np.exp(-(((PHI + 135) / 35) ** 2 + ((PSI - 135) / 35) ** 2))
+    # Левая спираль
+    allowed += 0.5 * np.exp(-(((PHI - 57) / 25) ** 2 + ((PSI - 47) / 25) ** 2))
+
+    ax.imshow(allowed, extent=[-180, 180, -180, 180],
+              origin='lower', cmap='Greens', alpha=0.6, aspect='auto')
+
+    # Наносим точки
+    phis = [p[0] for p in phi_psi_points]
+    psis = [p[1] for p in phi_psi_points]
+    ax.scatter(phis, psis, c='red', s=80, edgecolor='black', zorder=5)
+
+    ax.axhline(0, color='gray', lw=0.5)
+    ax.axvline(0, color='gray', lw=0.5)
+    ax.set_xlim(-180, 180); ax.set_ylim(-180, 180)
+    ax.set_xlabel('φ (phi), °')
+    ax.set_ylabel('ψ (psi), °')
+    ax.set_title(title)
+    return ax
+
+
+# =============================================================
+# 6. СХЕМАТИЧНАЯ 3D-ВИЗУАЛИЗАЦИЯ
+# =============================================================
+def draw_alpha_helix_3d(sequence, ax=None):
+    """Схематичная α-спираль в 3D."""
+    if ax is None:
+        fig = plt.figure(figsize=(6, 6))
+        ax = fig.add_subplot(111, projection='3d')
+
+    n = len(sequence)
+    t = np.linspace(0, 2 * np.pi * n / 3.6, n * 10)  # ~3.6 остатка/виток
+    z = np.linspace(0, n, len(t))
+    x = np.cos(t)
+    y = np.sin(t)
+
+    ax.plot(x, y, z, color='steelblue', lw=2.5)
+
+    # Точки остатков
+    t_res = np.linspace(0, 2 * np.pi * n / 3.6, n)
+    z_res = np.linspace(0, n, n)
+    x_res = np.cos(t_res)
+    y_res = np.sin(t_res)
+
+    ax.scatter(x_res, y_res, z_res, s=120, c='lightcoral',
+               edgecolor='black', zorder=5)
+    for xi, yi, zi, aa in zip(x_res, y_res, z_res, sequence):
+        ax.text(xi, yi, zi, aa, fontsize=9, ha='center', va='center')
+
+    ax.set_title('Схема α-спирали')
+    ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([])
+    return ax
+
+
+def draw_beta_sheet_3d(sequence, ax=None):
+    """Схематичная β-складка в 3D (зигзаг)."""
+    if ax is None:
+        fig = plt.figure(figsize=(6, 6))
+        ax = fig.add_subplot(111, projection='3d')
+
+    n = len(sequence)
+    x = np.arange(n)
+    y = np.zeros(n)
+    z = np.array([0.5 if i % 2 == 0 else 0.0 for i in range(n)])
+
+    ax.plot(x, y, z, color='steelblue', lw=3)
+    ax.scatter(x, y, z, s=120, c='lightcoral', edgecolor='black')
+    for xi, zi, aa in zip(x, z, sequence):
+        ax.text(xi, 0, zi + 0.05, aa, fontsize=9, ha='center')
+
+    # Пунктирные H-связи
+    for i in range(0, n - 3, 2):
+        ax.plot([i, i + 3], [0, 0], [z[i], z[i + 3]], ':', color='gray')
+
+    ax.set_title('Схема β-складки')
+    ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([])
+    ax.set_zlim(-0.2, 1.0)
+    return ax
+
+
+# =============================================================
+# 7. ГЛАВНЫЙ АНАЛИЗ
+# =============================================================
+def analyze_peptide(name, seq):
+    print(f"\n{'=' * 60}\nПептид: {name} ({seq})")
+    labels, h_scores, e_scores = predict_secondary_structure(seq)
+    print(f"Предсказанная структура: {''.join(labels)}")
+    print(f"Средняя H-склонность: {h_scores.mean():.2f}, "
+          f"средняя E-склонность: {e_scores.mean():.2f}")
+
+    # Доминирующая структура
+    dom = max(set(labels), key=labels.count)
+    struct_name = {'H': 'α-спираль', 'E': 'β-складка', 'C': 'coil'}[dom]
+    print(f"Доминирующая структура: {struct_name}")
+
+    # φ/ψ углы для карты Рамачандрана
+    phi_psi = []
+    for lab in labels:
+        key = {'H': 'alpha', 'E': 'beta', 'C': 'coil'}[lab]
+        # Небольшой "шум" для реалистичности
+        phi, psi = PHI_PSI[key]
+        phi += np.random.normal(0, 8)
+        psi += np.random.normal(0, 8)
+        phi_psi.append((phi, psi))
+
+    return labels, phi_psi, dom
+
+
+# =============================================================
+# 8. ПРИМЕР ИСПОЛЬЗОВАНИЯ
+# =============================================================
+peptides = {
+    "HER2_E75":     "KIFGSLAFL",
+    "HER2_GP2":     "IISAVVGIL",
+    "HER2_AE37":    "LRMKGVGSPYVSRLLGICL",
+    "PIK3CA_E545K": "STRDPLSEITK",
+    "KRAS_G12D":    "KLVVVGADGV",
+}
+
+np.random.seed(42)
+
+for name, seq in peptides.items():
+    labels, phi_psi, dom = analyze_peptide(name, seq)
+
+    # === Рисунок для каждого пептида ===
+    fig = plt.figure(figsize=(14, 10))
+    fig.suptitle(f'{name} — {seq}\nДоминирующая структура: {dom}',
+                 fontsize=14, fontweight='bold')
+
+    # (а) Спиральное колесо
+    ax1 = fig.add_subplot(2, 3, 1, projection='polar')
+    draw_helical_wheel(seq, ax=ax1, title='Спиральное колесо')
+
+    # (б) Схема β-складки
+    ax2 = fig.add_subplot(2, 3, 2)
+    draw_beta_sheet(seq, ax=ax2, title='Схема β-складки')
+
+    # (в) Карта Рамачандрана
+    ax3 = fig.add_subplot(2, 3, 3)
+    draw_ramachandran(phi_psi, title='Карта Рамачандрана', ax=ax3)
+
+    # (г) Профиль склонностей
+    ax4 = fig.add_subplot(2, 3, 4)
+    _, h_scores, e_scores = predict_secondary_structure(seq)
+    ax4.plot(h_scores, label='H-склонность', color='red', lw=2)
+    ax4.plot(e_scores, label='E-склонность', color='blue', lw=2)
+    ax4.axhline(1.05, color='gray', ls='--', lw=1)
+    ax4.set_xlabel('Позиция (скользящее окно)')
+    ax4.set_ylabel('Склонность')
+    ax4.set_title('Профиль склонностей')
+    ax4.legend()
+
+    # (д) 3D α-спираль
+    ax5 = fig.add_subplot(2, 3, 5, projection='3d')
+    draw_alpha_helix_3d(seq, ax=ax5)
+
+    # (е) 3D β-складка
+    ax6 = fig.add_subplot(2, 3, 6, projection='3d')
+    draw_beta_sheet_3d(seq, ax=ax6)
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.show()
